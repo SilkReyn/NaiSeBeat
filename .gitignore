@@ -7,6 +7,14 @@
 *.o
 *.obj
 
+# Debug/ Logging
+*.log
+*.idb
+*.pdb
+*.tlog
+*.ilk
+*.exp
+
 # Precompiled Headers
 *.gch
 *.pch
@@ -30,3 +38,9 @@
 *.exe
 *.out
 *.app
+
+# Output
+bin*
+Debug*
+Release*
+/.vs
