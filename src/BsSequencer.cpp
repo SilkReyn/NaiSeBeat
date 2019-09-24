@@ -255,8 +255,8 @@ void processEvents(
 
 void transform_mania(
     BeatSetT&              rInOut,
-    forward_list<EventT>&  evList,
     const double           baseTime_ms,
+    forward_list<EventT>&  evList,
     function<float(float)> ftRelative,
     ISequencer::modeFlag_t gameMode=0u)
 {
@@ -600,31 +600,83 @@ void transform_mania(
 
 void transform_taiko(
     vector<EntityT>&       rInOutTar,
-    size_t                 fstIdx,
+    const size_t           fstIdx,
     const double           baseTime_ms,
-    function<float(float)> ftRelative,
-    vector<EntityT>&       rOutObj,
     forward_list<EventT>&  rOutEvents,
+    vector<EntityT>&       rOutObj,
+    function<float(float)> ftRelative,
     ISequencer::modeFlag_t gameMode=0u)
 {
-    if (fstIdx >= rInOutTar.size())
-        return;
-    //TODO validate game mode when implemented
+    using HitArea_t = HitTypeT::area_t;
+    //if (fstIdx >= rInOutTar.size())
+    //    return;
+    // TODO validate game mode when implemented
 
-    EntityT obj;
-    EntityT obs;
+    //EntityT obj;
+    //EntityT obs;
+    
+
+    //auto src = rInOutTar.cbegin() + fstIdx;
+    //auto tarEnd = rInOutTar.cend();
+    //auto dst = rInOutTar.begin();
+
+    bool isLeft{};
     float timeSlots[4][3];  // 4:x, 3:y
-    float lastSample{};
-
-    auto src = rInOutTar.cbegin() + fstIdx;
-    auto tarEnd = rInOutTar.cend();
-    auto dst = rInOutTar.begin();
     for (auto&& rows : timeSlots)
     {// Init each slot to 2sec.
         fill(rows, &rows[3], 2000.f);
     }
-    //TODO taiko game mode implementation
-    dst->SpawnTime = ftRelative(src->SpawnTime);
+
+    vector<EntityT> tars;
+    HitTypeT ht;
+    float lastTs{};
+    for (auto srcIt=rInOutTar.cbegin() + min(fstIdx,rInOutTar.size()); srcIt!=rInOutTar.cend(); ++srcIt)
+    {
+        ht.setF(srcIt->Value);
+        if (srcIt->Type.OsuType.IsComboStart)
+        {// toggle color
+            rOutEvents.emplace_front(EventT{EventType_t::sw_lightSd, srcIt->SpawnTime, (float)enum_cast(isLeft ? Switch_t::s2_on : Switch_t::s1_on)});
+            isLeft = !isLeft; 
+        }
+
+        // Minimum spacing of neighbour targets
+        if (lastTs != srcIt->SpawnTime)  
+        {// A new timeline
+            if (BLOCK_PLACEMENT_DOWNTIME_NEIGHBOUR_MS > srcIt->SpawnTime - lastTs)
+                continue;
+            lastTs = srcIt->SpawnTime;
+        }
+
+        if (srcIt->Type.OsuType.IsCircle)
+        {
+            switch (ht.Area)
+            {
+            case HitArea_t::don:
+            case HitArea_t::softCenter:
+            default:
+                
+                break;
+
+            case HitArea_t::katsu:
+            case HitArea_t::rim:
+                break;
+
+            case HitArea_t::dondon:
+            case HitArea_t::hardCenter:
+                break;
+
+            case HitArea_t::katatsu:
+            case HitArea_t::sides:
+                break;
+            }
+        } else if(srcIt->Type.OsuType.IsSlider) {
+
+        }else if(srcIt->Type.OsuType.IsSpin) {
+
+        }
+        ftRelative(srcIt->SpawnTime);
+    }
+    
 }
 
 
@@ -660,7 +712,7 @@ void CBsSequencer::transformBeatset(BeatSetT& rInOut) const
     switch (rInOut.Setting.Mode)
     {
     case GameMode_t::os_mania:
-        transform_mania(rInOut, evList, baseTime_ms, fSample);
+        transform_mania(rInOut, baseTime_ms, evList, fSample);
         break;
 
     case GameMode_t::os_taiko:
@@ -668,9 +720,9 @@ void CBsSequencer::transformBeatset(BeatSetT& rInOut) const
             rInOut.Targets,
             i_fst,
             baseTime_ms,
-            fSample,
+            evList,
             rInOut.Objects,
-            evList);
+            fSample);
         break;
 
     default:

@@ -54,6 +54,7 @@ union EntityTypeT
 
     EntityTypeT() : RawType(0) {}
     EntityTypeT(uint8_t val) :RawType(val) {}
+    operator int() { return static_cast<int>(RawType); }
 };
 
 union HitTypeT
@@ -67,7 +68,7 @@ union HitTypeT
             Clap : 1,
             Unused;
     } Sound;
-    enum area_t
+    enum class area_t : uint8_t 
     {
         softCenter = 0,
         don = 1,

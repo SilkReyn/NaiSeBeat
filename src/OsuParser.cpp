@@ -334,7 +334,7 @@ bool assignFromSequence(const StringSequenceT& rInSeq, vector<EntityT>& rOut)
                 } else {
                     obj.Type.OsuType.IsContinous = false;
                 }
-            } else {
+            } else {  // TODO store slider or spinner attributes
                 try
                 {
                     obj.Value = stof(args[HitIndex::soundId]);
