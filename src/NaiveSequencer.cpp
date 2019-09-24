@@ -37,11 +37,10 @@ using namespace NaiSe;
 BeatSetT CBeatTranslator::loadFile(const char* fullpath) const
 {
     CBeatmap file;
-    COsuParser par;
     BeatSetT data;
     if (file.initFromPath(string{fullpath}))
     {
-        if (par.tryParse(file, data))
+        if (COsuParser::tryParse(file, data))
             return data;
     }
     throw runtime_error("NaiveSequencer::loadFile(...) - failed");

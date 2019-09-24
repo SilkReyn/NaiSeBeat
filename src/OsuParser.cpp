@@ -16,6 +16,7 @@ using namespace NaiSe;
 using namespace std::string_literals;
 using IndexDict = unordered_map<string, pair<int, size_t>>;
 
+
 namespace{
 
 struct Tags
@@ -26,7 +27,6 @@ struct Tags
     inline static const std::string Osu_Trigger{"[Events]"};
     inline static const std::string Osu_Timing{"[TimingPoints]"};
     inline static const std::string Osu_Target{"[HitObjects]"};
-    //static const uint8_t Osu_Tag_Count{6};
 };
 
 struct Properties
@@ -45,7 +45,7 @@ struct Properties
     static constexpr auto const Osu_iPreviewStart{"PreviewTime"};
 };
 
-enum class TpIndex : uint8_t
+enum class TimingIndex_t : uint8_t
 {
     timestamp = 0,
     timePerBeat,
@@ -58,7 +58,7 @@ enum class TpIndex : uint8_t
     _size
 };
 
-enum class HoIndex : uint8_t
+enum class HitIndex : uint8_t
 {
     loc_x = 0,
     loc_y,
@@ -139,7 +139,39 @@ string getStrAttribute(const StringSequenceT& rInSrc, const char* property)
         }
 
     }
-    return "0"s;
+    return string{};
+}
+
+template<typename T>
+T getAttribute_(const StringSequenceT& rInSrc, const char* property, T nullValue) noexcept { return nullValue; }
+
+template<>
+string getAttribute_<string>(const StringSequenceT& rInSrc, const char* property, string nullValue)  noexcept
+{
+    string str = getStrAttribute(rInSrc, property);
+    return (str.empty() ? nullValue : str);
+}
+
+template<>
+int getAttribute_<int>(const StringSequenceT& rInSrc, const char* property, int nullValue) noexcept
+{ 
+    try
+    {
+        return stoi(getStrAttribute(rInSrc, property));
+    } catch (exception ex) {
+        return nullValue;
+    }
+}
+
+template<>
+float getAttribute_<float>(const StringSequenceT& rInSrc, const char* property, float nullValue) noexcept
+{ 
+    try
+    {
+        return stof(getStrAttribute(rInSrc, property));
+    } catch (exception ex) {
+        return nullValue;
+    }
 }
 
 float commonUnit(float a, float b)
@@ -181,7 +213,145 @@ float evaluateTiming(const vector<EventT>& events)
 }// anonymous namespace
 
 
-bool COsuParser::tryParse(const CBeatmap& rIn, BeatSetT& rOut) const
+ // events
+bool assignFromSequence(const StringSequenceT& rInSeq, vector<EventT>& rOut)
+{
+    if (!rInSeq.Distance)
+    {
+        return false;
+    }
+
+    xvec<TimingIndex_t, string> args;
+    EventT ev;
+    float baseVal=1.f;
+    float lastVal = baseVal;
+    bool state = false;
+    int iEvent;
+
+    assert(rInSeq.Distance <= rOut.max_size());
+    rOut.reserve(rInSeq.Distance);
+
+    // optional: check kind of header - Events OR TimingPoints
+    for (auto it=rInSeq.Begin+1; it!=rInSeq.End; ++it)  // skip header
+    {
+        // assuming no commentary is found here
+        if (xstring::trySplit(*it, args, ','))
+        {
+            assert((uint8_t)TimingIndex_t::_size <= args.size());
+            try
+            {
+                ev.Timestamp = stof(args[TimingIndex_t::timestamp]);
+                ev.Value = stof(args[TimingIndex_t::timePerBeat]);
+            } catch (exception ex) { continue; }
+            if (ev.Value < 0)
+            {
+                ev.Value = abs(ev.Value) / 100.f * baseVal;
+            } else {
+                baseVal = ev.Value;
+            }
+
+            try
+            {
+                iEvent = stoi(args[TimingIndex_t::kiaiState]);
+            } catch (exception ex) { iEvent = 0; }
+            if (!state && (bool)iEvent)  // on rising
+            {
+                ev.EventType = EventType_t::kiai;
+                state = true;
+            } else if (  // bpm or kiai changed
+                (state != (bool)iEvent) ||
+                (FLT_EPSILON < abs(ev.Value-lastVal)))
+            {
+                lastVal = ev.Value;  // always beat duration
+                state = (iEvent == (int)EventType_t::kiai);
+                ev.EventType = EventType_t::shift;
+            } else {
+                ev.EventType = EventType_t::ignore;
+            }
+
+            if (!rOut.empty() && ev.Timestamp == rOut.back().Timestamp)
+            {
+                if (ev.EventType == EventType_t::ignore)
+                    continue;
+
+                rOut.back() = ev;  // re-evaluated and overwritten by order of read-in
+            } else {
+                rOut.push_back(ev);  // is not cleared before appending;
+            }
+            assert(rOut.empty() ? ev.Timestamp >= 0 : ev.Timestamp >= rOut.back().Timestamp);  // timestamps must appear sorted ascendingly
+
+        }// split
+    }// loop lines
+     // has at least one beat duration over 1ms
+    return !rOut.empty() && (rOut.front().Value > 1);  // can be external contents
+}
+
+
+//targets
+bool assignFromSequence(const StringSequenceT& rInSeq, vector<EntityT>& rOut)
+{
+    if (!rInSeq.Distance)
+    {
+        return false;
+    }
+
+    xvec<HitIndex, string> args;
+    EntityT obj;
+
+    assert(rInSeq.Distance <= rOut.max_size());
+    rOut.reserve(rInSeq.Distance);
+
+    for (auto it=rInSeq.Begin+1; it!=rInSeq.End; ++it)  // skip header
+    {
+        // assuming no commentary is found here
+        if (xstring::trySplit(*it, args, ','))
+        {
+            if (any_of(args.cbegin(), args.cend() - 1,
+                [](string sx) { return xstring::contains(sx, "-"); }))  // no negative values, excludig extra part
+            {
+                continue;
+            }
+            assert(UINT8_MAX >= stoi(args[HitIndex::typeId]));  // within expected range
+            try
+            {
+                obj.Location.first = min(Os_Map_Width, (uint16_t)stoi(args[HitIndex::loc_x]));
+                obj.Location.second = min(Os_Map_Height, (uint16_t)stoi(args[HitIndex::loc_y]));
+                obj.SpawnTime = stof(args[HitIndex::timestamp]);  // may repeat
+                obj.Type.RawType = (uint8_t)(0xFF & stoi(args[HitIndex::typeId]));  // trimmed if over 255
+            } catch (exception e) { continue; }
+
+            if (obj.Type.OsuType.IsContinous)
+            {// try get hold-duration
+                if(xstring::trySplit(string(args.back()), args, ':'))  // args is initially cleared on call. does not work inplace if rIn references a element of args
+                {
+                    try
+                    {
+                        obj.Value = stof(args.front());
+                    } catch (exception ex) {
+                        obj.Type.OsuType.IsContinous = false;
+                        obj.Value = 0.f;
+                    }
+                } else {
+                    obj.Type.OsuType.IsContinous = false;
+                }
+            } else {
+                try
+                {
+                    obj.Value = stof(args[HitIndex::soundId]);
+                } catch (exception e) { obj.Value = 0; }
+            }
+
+            if (!obj.Type.OsuType.IsComboStart && !(obj.Type.OsuType.IsCircle ^ obj.Type.OsuType.IsSlider ^ obj.Type.OsuType.IsSpin ^ obj.Type.OsuType.IsContinous))
+                continue;  // is not: exactly one of a kind or combo start
+
+            rOut.push_back(obj);
+        }// split
+    }// loop lines
+    return rOut.size();
+}
+
+
+bool COsuParser::tryParse(const CBeatmap& rIn, BeatSetT& rOut)
 {// rIn must remain unchanged for the duration of the call!
     if (GameTypes_t::osu != rIn.getGameType() || !rIn.isValid())
     {// Understands only osu beatmap
@@ -200,10 +370,7 @@ bool COsuParser::tryParse(const CBeatmap& rIn, BeatSetT& rOut) const
 
     // General
     rOut.Game = GameTypes_t::osu;
-    try
-    {
-        rOut.Setting.SubgridSize = stoi(getStrAttribute(seq, Properties::Osu_iSubgridSize));
-    } catch (exception ex){ rOut.Setting.SubgridSize = 8; }
+    rOut.Setting.SubgridSize = getAttribute_<int>(seq, Properties::Osu_iSubgridSize, 8);
     if (0 <= (idxPair = getMappedPair(dic, Tags::Osu_Setting)).first)
     {
         StringSequenceT subSeq = seq.make_subsequence(idxPair.second, getNextMappedLine(dic, idxPair.first));
@@ -211,21 +378,29 @@ bool COsuParser::tryParse(const CBeatmap& rIn, BeatSetT& rOut) const
         {
             rOut.Setting.MapName = rIn.getFilename();
             rOut.Media.Filename = getStrAttribute(subSeq, Properties::Osu_sMediaName);
-            try
+            rOut.Media.PreviewStart_ms = getAttribute_<int>(subSeq, Properties::Osu_iPreviewStart, 0);
+            rOut.Setting.LeadIn_ms = getAttribute_<int>(subSeq, Properties::Osu_iLeadIn, 0);
+            switch (getAttribute_<int>(subSeq, Properties::Osu_iMode, -1))
             {
-                rOut.Media.PreviewStart_ms = stoi(getStrAttribute(subSeq, Properties::Osu_iPreviewStart));
-                rOut.Setting.LeadIn_ms = stoi(getStrAttribute(subSeq, Properties::Osu_iLeadIn));
-                rOut.Setting.Mode = (stoi(getStrAttribute(subSeq, Properties::Osu_iMode)) == 3) ?
-                    GameMode_t::os_mania : GameMode_t::undefined;
-            } catch (exception ex) { pass = false; }
+            case 3:
+                rOut.Setting.Mode = GameMode_t::os_mania;
+                break;
 
-            pass &=
-                !(xstring::isEmptyOrWhitespace(&(rOut.Media.Filename)) ||
-                (rOut.Setting.Mode == GameMode_t::undefined) ||
-                    xstring::isEmptyOrWhitespace(&(rOut.Setting.MapName)));
+            case 1:
+                rOut.Setting.Mode = GameMode_t::os_taiko;
+                break;
+
+            default:
+                rOut.Setting.Mode = GameMode_t::undefined;
+                break;
+            }
         }
     }
-    
+    pass &=
+        !(xstring::isEmptyOrWhitespace(&(rOut.Media.Filename)) ||
+        (rOut.Setting.Mode == GameMode_t::undefined) ||
+            xstring::isEmptyOrWhitespace(&(rOut.Setting.MapName)));
+
     // Metadata
     if (0 <= (idxPair = getMappedPair(dic, Tags::Osu_Media)).first)
     {
@@ -262,188 +437,3 @@ bool COsuParser::tryParse(const CBeatmap& rIn, BeatSetT& rOut) const
     return pass;
 }
 
-
-/*
-// Deprecated: can not distinguish between duplicate property names. Some properties are in "Metadata"
-bool COsuParser::assignFromSeqence(const NaiSe::StringSequenceT& rInSeq, SettingT& rOut) const
-{
-    if (!rInSeq.Distance)
-    {
-        return false;
-    }
-    //_pOut->MapName;
-    try
-    {
-        rOut.LeadIn_ms = stoi(getStrAttribute(rInSeq, Properties::Osu_iLeadIn));
-        //rOut.ApproachTime_ms = stoi(getStrAttribute(rInSeq, Properties::Osu_iApproachTime));
-        switch (stoi(getStrAttribute(rInSeq, Properties::Osu_iMode)))
-        {
-        case 3:
-            rOut.Mode = GameMode_t::os_mania;
-            break;
-        default:
-            rOut.Mode = GameMode_t::undefined;
-            break;
-        }
-    } catch (exception ex) {
-        return false;
-    }
-    //_pOut->Stage  [TODO]: assign from version, overalldifficulty or calculate new
-    return rOut.Mode != GameMode_t::undefined;
-}
-
-
-//deprecated: can not distinguish between duplicate property names. Some properties are in "General".
-bool COsuParser::assignFromSeqence(const NaiSe::StringSequenceT& rInSeq, NaiSe::MediaInfoT& rOut) const
-{
-    if (!rInSeq.Distance)
-    {
-        return false;
-    }
-    rOut.Filename = getStrAttribute(rInSeq, Properties::Osu_sMediaName);
-    try
-    {
-        rOut.PreviewStart_ms = stoi(getStrAttribute(rInSeq, Properties::Osu_iPreviewStart));
-    } catch (exception ex) {
-        rOut.PreviewStart_ms = 0u;
-    }
-    rOut.Title = getStrAttribute(rInSeq, Properties::Osu_sTitle);
-    rOut.Artist = getStrAttribute(rInSeq, Properties::Osu_sArtist);
-    rOut.Author = getStrAttribute(rInSeq, Properties::Osu_sAuthor);
-
-    return !xstring::isEmptyOrWhitespace(&(rOut.Filename));
-}
-*/
-
-
-// events
-bool COsuParser::assignFromSequence(const NaiSe::StringSequenceT& rInSeq, vector<EventT>& rOut) const
-{
-    if (!rInSeq.Distance)
-    {
-        return false;
-    }
-
-    vector<string> args;
-    EventT ev;
-    float baseVal=1.f;
-    float lastVal = baseVal;
-    bool state = false;
-    int iEvent;
-
-    assert(rInSeq.Distance <= rOut.max_size());
-    rOut.reserve(rInSeq.Distance);
-
-    // optional: check kind of header - Events OR TimingPoints
-    for (auto it=rInSeq.Begin+1; it!=rInSeq.End; ++it)  // skip header
-    {
-        // assuming no commentary is found here
-        if (xstring::trySplit(*it, args, ','))
-        {
-            assert((uint8_t)TpIndex::_size <= args.size());
-            try
-            {
-                ev.Timestamp = stof(args[(uint8_t)TpIndex::timestamp]);
-                ev.Value = stof(args[(uint8_t)TpIndex::timePerBeat]);
-            } catch (exception ex) { continue; }
-            if (ev.Value < 0)
-            {
-                ev.Value = abs(ev.Value) / 100.f * baseVal;
-            } else {
-                baseVal = ev.Value;
-            }
-
-            try
-            {
-                iEvent = stoi(args[(uint8_t)TpIndex::kiaiState]);
-            } catch (exception ex) { iEvent = 0; }
-            if (!state && (bool)iEvent)  // on rising
-            {
-                ev.EventType = EventType_t::kiai;
-                state = true;
-            } else if (  // bpm or kiai changed
-                (state != (bool)iEvent) ||
-                (FLT_EPSILON < abs(ev.Value-lastVal)))
-            {
-                lastVal = ev.Value;  // always beat duration
-                state = (iEvent == (int)EventType_t::kiai);
-                ev.EventType = EventType_t::shift;
-            } else {
-                ev.EventType = EventType_t::ignore;
-            }
-            
-            if (!rOut.empty() && ev.Timestamp == rOut.back().Timestamp)
-            {
-                if (ev.EventType == EventType_t::ignore)
-                    continue;
-
-                rOut.back() = ev;  // re-evaluated and overwritten by order of read-in
-            } else {
-                rOut.push_back(ev);  // is not cleared before appending;
-            }
-            assert(rOut.empty() ? ev.Timestamp >= 0 : ev.Timestamp >= rOut.back().Timestamp);  // timestamps must appear sorted ascendingly
-            
-        }// split
-    }// loop lines
-    // has at least one beat duration over 1ms
-    return !rOut.empty() && (rOut.front().Value > 1);  // can be external contents
-}
-
-
-//targets
-bool COsuParser::assignFromSequence(const NaiSe::StringSequenceT& rInSeq, vector<NaiSe::EntityT>& rOut) const
-{
-    if (!rInSeq.Distance)
-    {
-        return false;
-    }
-
-    vector<string> args;
-    EntityT obj;
-
-    assert(rInSeq.Distance <= rOut.max_size());
-    rOut.reserve(rInSeq.Distance);
-
-    for (auto it=rInSeq.Begin+1; it!=rInSeq.End; ++it)  // skip header
-    {
-        // assuming no commentary is found here
-        if (xstring::trySplit(*it, args, ','))
-        {
-            if (any_of(args.cbegin(), args.cend() - 1,
-                [](string sx) { return xstring::contains(sx, "-"); }))  // no negative values, excludig extra part
-            {
-                continue;
-            }
-            assert(UINT8_MAX >= stoi(args[(uint8_t)HoIndex::typeId]));  // within expected range
-            try
-            {
-                obj.Location.first = min(Os_Map_Width, (uint16_t)stoi(args[(uint8_t)HoIndex::loc_x]));
-                obj.Location.second = min(Os_Map_Height, (uint16_t)stoi(args[(uint8_t)HoIndex::loc_y]));
-                obj.SpawnTime = stof(args[(uint8_t)HoIndex::timestamp]);  // may repeat
-                obj.Type.RawType = (uint8_t)stoi(args[(uint8_t)HoIndex::typeId]);  // trimmed if over 255
-            } catch (exception e) { continue; }
-            
-            if (obj.Type.OsuType.IsContinous)
-            {// try get hold-duration
-                if(xstring::trySplit(string(args.back()), args, ':'))  // args is initially cleared on call. does not work inplace if rIn references a element of args
-                {
-                    try
-                    {
-                        obj.Value = stof(args.front());
-                    } catch (exception ex) {
-                        obj.Type.OsuType.IsContinous = false;
-                        obj.Value = 0.f;
-                    }
-                } else {
-                    obj.Type.OsuType.IsContinous = false;
-                }
-            }
-
-            if (!obj.Type.OsuType.IsComboStart && !(obj.Type.OsuType.IsCircle ^ obj.Type.OsuType.IsSlider ^ obj.Type.OsuType.IsSpin ^ obj.Type.OsuType.IsContinous))
-                continue;  // is not: exactly one of a kind or combo start
-
-            rOut.push_back(obj);
-        }// split
-    }// loop lines
-    return rOut.size();
-}
