@@ -14,9 +14,9 @@ using namespace NaiSe;
 
 
 namespace NaiSe {
-    enum class Direction_t : uint8_t { midUp = 0, midDown, lCenter, rCenter, lUp, rUp, lDown, rDown, midCenter, direction_size };
-    enum class Cube_t : uint8_t { left = 0, right, reserved, bomb };
-    enum class Speed_t : uint8_t { reset = 0, slo1, slo2, med1, med2, med3, fst1, fst2 };
+    enum class Direction_t : uint8_t { up=0, down, left, right, lUp, rUp, lDown, rDown, fwd, direction_size };
+    enum class Cube_t : uint8_t { left=0, right, reserved, bomb };
+    enum class Speed_t : uint8_t { reset=0, slo1, slo2, med1, med2, med3, fst1, fst2 };
     enum class Switch_t : uint8_t
     {
         s_Off = 0,
@@ -27,7 +27,8 @@ namespace NaiSe {
 
 
     const char* const STAGE_NAMES[] = { "Easy", "Normal", "Hard", "Expert", "ExpertPlus" };
-    const char* const MODE_NAME_NA = "NoArrows";
+    const char MODE_NAME_NA[] = "NoArrows";
+    const char MODE_NAME_NM[] = "Standard";
     const uint16_t LEAD_IN_TIME_MS = 3000;
 
 }// NaiSe ns
@@ -142,6 +143,48 @@ vector<EntityT>::const_iterator isSweepPattern(vector<EntityT>::const_iterator i
     return (i>=4) ? it : end;
 }
 
+template<const char* TSetName>
+void ss_appendSet(stringstream& sstr, CBsSequencer::BsStageFlagsT stages)
+{
+    sstr << R"({"_beatmapCharacteristicName":")" << TSetName << R"(","_difficultyBeatmaps":[)";
+    
+    //--> Difficulty Array
+    static_assert(sizeof(STAGE_NAMES) >= 5, "Attempts to access 5th element, but has less");
+    if (stages.Easy)
+    {// TODO fill rank values from beatset StageLevel
+        ss_appendStage(sstr, STAGE_NAMES[0], 1, TSetName, 0);
+        if (stages.Normal | stages.Hard | stages.Expert | stages.ExpertPlus)
+            sstr << ',';
+    }
+
+    if (stages.Normal)
+    {
+        ss_appendStage(sstr, STAGE_NAMES[1], 3, TSetName, 0);
+        if (stages.Hard | stages.Expert | stages.ExpertPlus)
+            sstr << ',';
+    }
+
+    if (stages.Hard)
+    {
+        ss_appendStage(sstr, STAGE_NAMES[2], 5, TSetName, 0);
+        if (stages.Expert | stages.ExpertPlus)
+            sstr << ',';
+    }
+
+    if (stages.Expert)
+    {
+        ss_appendStage(sstr, STAGE_NAMES[3], 7, TSetName, 0);
+        if (stages.ExpertPlus)
+            sstr << ',';
+    }
+
+    if (stages.ExpertPlus)
+    {
+        ss_appendStage(sstr, STAGE_NAMES[4], 9, TSetName, 1);
+    }
+    sstr << "]}";
+}
+
 }// anonymous ns
 
 
@@ -180,17 +223,16 @@ void processEvents(
     // combo : env color change
     // beat shift : laser speed
     // Kiai : toggle floor light, lasers, extend inner rings, turn off backlight
-    // spinner : vertical wall
-    // hold: horizontal wall
+    // other : rotate rings
 
     // Turn on background light after lead-in time
     evn.EventType = lights[0];
-    evn.Timestamp = fSetSample(max<uint16_t>(tLeadIn_ms, 1));  //max(4.f, quantizeTimestamp(rInOut.Setting.LeadIn_ms, baseTime_ms, rInOut.Setting.SubgridSize));
+    evn.Timestamp = max(3.f, fSetSample(tLeadIn_ms));
     evn.Value << Switch_t::s1_on;
     rOutEvents.push_front(evn);
 
     // Turn on environment light at start time
-    evn.Timestamp = fSetSample(max<uint16_t>(tStart_ms, 1));  //quantizeTimestamp(src->SpawnTime, baseTime_ms, rInOut.Setting.SubgridSize);
+    evn.Timestamp = max(3.f , fSetSample(tStart_ms));
     evn.Value << Switch_t::s1_on;
     evn.EventType = lights[1];
     rOutEvents.push_front(evn);
@@ -265,7 +307,7 @@ void transform_mania(
     const double           baseTime_ms,
     forward_list<EventT>&  evList,
     function<float(float)> ftRelative,
-    ISequencer::modeFlag_t asGameMode=0u)
+    GameMode_t             mode=GameMode_t::bs_2H_free)
 {
     assert(ftRelative);
     //if (GameTypes_t::beatsaber == rInOut.Game)
@@ -403,7 +445,7 @@ void transform_mania(
     {// src and dst CAN be same -> obj used as work copy
         obj.Location.first = (uint16_t)(src->Location.first / OS_COL_SZ);
         obj.Location.second = 0;
-        obj.Value = enum_cast(Direction_t::midCenter);  // TODO give some direction logic
+        obj.Value = enum_cast(Direction_t::fwd);  // TODO give some direction logic
         obj.SpawnTime = ftRelative(src->SpawnTime); //quantizeTimestamp(src->SpawnTime, baseTime_ms, rInOut.Setting.SubgridSize);
         //obj.Type.RawType == 0
         assert(obj.Location.first < Bs_Map_Width);
@@ -613,7 +655,7 @@ void transform_taiko(
     forward_list<EventT>&  rOutEvents,
     vector<EntityT>&       rOutObj,
     function<float(float)> ftRelative,
-    ISequencer::modeFlag_t asGameMode=0u)
+    GameMode_t             mode=GameMode_t::bs_2H_free)
 {
     using HitArea_t = HitTypeT::area_t;
     assert(ftRelative);
@@ -632,7 +674,7 @@ void transform_taiko(
     EntityT out;
     HitTypeT ht;
 
-    out.Value = enum_cast(Direction_t::midCenter);
+    out.Value = enum_cast(Direction_t::fwd);
     for (auto i=fstIdx+1; i<=tarSz; ++i)
     {
         const auto& tar = rInOutTar[i - 1];
@@ -663,7 +705,7 @@ void transform_taiko(
 
             timeSlots[isLeft ? 0 : 1] = tar.SpawnTime;
             out.SpawnTime = ftRelative(tar.SpawnTime);
-            bool isFinisher = baseTime_ms < (nextTs - tar.SpawnTime);
+            bool isFinisher = (2 * baseTime_ms) < (nextTs - tar.SpawnTime);
             ht.setF(tar.Value);
             switch (ht.Area)
             {
@@ -729,14 +771,19 @@ void transform_taiko(
             out.Value = ftRelative(tMax - tar.SpawnTime);
             rOutObj.emplace_back(out);
             out.Location.second = 0;
-            out.Value = enum_cast(Direction_t::midCenter);
+            out.Value = enum_cast(Direction_t::fwd);
             bool isSideL = isLeft;
-            for (auto ts=tar.SpawnTime; ts<tMax; ts+=BLOCK_PLACEMENT_DOWNTIME_NEIGHBOUR_MS)
+            for (auto ts=tar.SpawnTime; ts<tMax; ts+=250.f)
             {
-                if (isSideL)
+                /*if (isSideL)
                     out.Location.first = isLeft ? 0 : 1;
                 else
                     out.Location.first = isLeft ? 2 : 3;
+                */
+                if (isSideL)
+                    out.Location.first = 0;
+                else
+                    out.Location.first = 3;
                 out.Type.RawType << (isLeft ? Cube_t::left : Cube_t::right);
                 out.SpawnTime = ftRelative(ts);
                 tars.emplace_back(out);
@@ -779,11 +826,56 @@ void transform_taiko(
         
     }//each target
 
+    if (mode == GameMode_t::bs_2H)
+    {
+        // 2nd pass
+        for (auto&& tn : tars)
+        {
+            if (tn.Type.RawType == enum_cast(Cube_t::bomb))
+                continue;
+
+            switch (tn.Location.second)
+            {
+            case 0:
+                switch (tn.Location.first)
+                {
+                case 0:
+                case 3:
+                    tn.Value = (float)enum_cast((tn.Type.RawType == enum_cast(Cube_t::left)) ? Direction_t::rDown : Direction_t::lDown);
+                    
+                    break;
+                case 1:
+                case 2:
+                    tn.Value = (float)enum_cast(Direction_t::down);
+                    break;
+                }
+                break;
+            case 1:
+                switch (tn.Location.first)
+                {
+                case 0:
+                    tn.Value = (float)enum_cast(Direction_t::left);
+                    break;
+                case 1:
+                case 2:
+                    tn.Value = (float)enum_cast(Direction_t::fwd);
+                    break;
+                case 3:
+                    tn.Value = (float)enum_cast(Direction_t::right);
+                    break;
+                }
+                break;
+            case 2:
+                tn.Value = (float)enum_cast(Direction_t::up);
+                break;
+            }
+        }
+    }
     rInOutTar = tars;
 }
 
 
-void CBsSequencer::transformBeatset(BeatSetT& rInOut) const
+void CBsSequencer::transformBeatset(BeatSetT& rInOut)
 {
     if (GameTypes_t::beatsaber == rInOut.Game)
         return;
@@ -793,7 +885,7 @@ void CBsSequencer::transformBeatset(BeatSetT& rInOut) const
     const double baseTime_ms = 60000.f / max(1.f, min(rInOut.Media.AverageRate_bpm, (float)BS_MAX_BPM));
 
     size_t i_fst{};
-    float tFirst;// = max<uint16_t>(rInOut.Setting.LeadIn_ms, LEAD_IN_TIME_MS);
+    float tFirst;
     auto tarEnd = rInOut.Targets.cend();
     auto fSample =
         [P=baseTime_ms, S=rInOut.Setting.SubgridSize](float t) {
@@ -819,13 +911,15 @@ void CBsSequencer::transformBeatset(BeatSetT& rInOut) const
             });
     }
 
-    assert(
-        mEnabledMode == BsModeFlagsT::FREESTYLE ||
-        mEnabledMode == BsModeFlagsT::SUPPORTED);
+    //assert(
+    //    mEnabledModes == BsModeFlagsT::FREESTYLE ||
+    //    mEnabledModes == BsModeFlagsT::SUPPORTED);
     switch (rInOut.Setting.Mode)
     {
     case GameMode_t::os_mania:
-        transform_mania(rInOut, baseTime_ms, evList, fSample);
+        transform_mania(rInOut, baseTime_ms, evList, fSample);  //TODO test after refactor
+        rInOut.Setting.Mode = GameMode_t::bs_2H_free;  // TODO add other modes
+        rInOut.Setting.MapName = MODE_NAME_NA;
         break;
 
     case GameMode_t::os_taiko:
@@ -835,7 +929,11 @@ void CBsSequencer::transformBeatset(BeatSetT& rInOut) const
             baseTime_ms,
             evList,
             rInOut.Objects,
-            fSample);
+            fSample,
+            GameMode_t::bs_2H);  // supported: free and 2H
+        mEnabledModes |= BsModeFlagsT::TWO_HAND;
+        rInOut.Setting.Mode = GameMode_t::bs_2H;
+        rInOut.Setting.MapName = MODE_NAME_NM;
         break;
 
     default:
@@ -863,8 +961,6 @@ void CBsSequencer::transformBeatset(BeatSetT& rInOut) const
 
     // Set Bs specific meta
     rInOut.Game = NaiSe::GameTypes_t::beatsaber;
-    rInOut.Setting.Mode = NaiSe::GameMode_t::bs_2H_free;  // TODO add other modes
-    rInOut.Setting.MapName = MODE_NAME_NA;
     rInOut.Setting.MapName.append(STAGE_NAMES[rInOut.StageLevel>>1]);
 }
 
@@ -928,10 +1024,10 @@ vector<string> CBsSequencer::serializeBeatset(const NaiSe::BeatSetT& rIn) const
 }
 
 
-string CBsSequencer::createMapInfo(const MediaInfoT& rInMeta, const SettingT& rInConf, BsStageFlagsT stages) const
+string CBsSequencer::createMapInfo(const MediaInfoT& rInMeta, BsStageFlagsT stages) const
 {
     stringstream sstr;
-
+    //--> Beatmap container
     sstr << R"({"_version":")" << getVersion();
     sstr << R"(","_songName":")" << rInMeta.Title;
     sstr << R"(","_songSubName":"","_songAuthorName":")" << rInMeta.Artist;
@@ -940,47 +1036,16 @@ string CBsSequencer::createMapInfo(const MediaInfoT& rInMeta, const SettingT& rI
     sstr << R"(,"_songTimeOffset":0.0,"_shuffle":0.0,"_shufflePeriod":1.0,"_previewStartTime":)" << (int)(rInMeta.PreviewStart_ms / 1000);
     sstr << R"(,"_previewDuration":10.0,"_songFilename":"Track.ogg","_coverImageFilename":"cover.png","_environmentName":"DefaultEnvironment","_difficultyBeatmapSets":[)";
     
-    if (mEnabledMode == BsModeFlagsT::SUPPORTED ||
-        mEnabledMode & BsModeFlagsT::FREESTYLE )
-    {// TODO add other modes
-        sstr << R"({"_beatmapCharacteristicName":")" << MODE_NAME_NA << R"(","_difficultyBeatmaps":[)";
-    
-        static_assert(sizeof(STAGE_NAMES)>=5, "Attempts to access 5th element, but has less");
-        if (stages.Easy)
-        {// TODO fill rank values from beatset StageLevel
-            ss_appendStage(sstr, STAGE_NAMES[0], 1, MODE_NAME_NA, 0);
-            if (stages.Normal | stages.Hard | stages.Expert | stages.ExpertPlus)
-                sstr << ',';
-        }
-        
-        if (stages.Normal)
-        {
-            ss_appendStage(sstr, STAGE_NAMES[1], 3, MODE_NAME_NA, 0);
-            if (stages.Hard | stages.Expert | stages.ExpertPlus)
-                sstr << ',';
-        }
-        
-        if (stages.Hard)
-        {
-            ss_appendStage(sstr, STAGE_NAMES[2], 5, MODE_NAME_NA, 0);
-            if (stages.Expert | stages.ExpertPlus)
-                sstr << ',';
-        }
-        
-        if (stages.Expert)
-        {
-            ss_appendStage(sstr, STAGE_NAMES[3], 7, MODE_NAME_NA, 0);
-            if (stages.ExpertPlus)
-                sstr << ',';
-        }
+    //--> Set array
+    //--> Mode container
+    if ((mEnabledModes == BsModeFlagsT::SUPPORTED) || (mEnabledModes & BsModeFlagsT::FREESTYLE))
+        ss_appendSet<MODE_NAME_NA>(sstr, stages);
+    if (mEnabledModes & BsModeFlagsT::TWO_HAND)
+        ss_appendSet<MODE_NAME_NM>(sstr, stages);
+    //<-- difficulty array, mode container
 
-        if (stages.ExpertPlus)
-        {
-            ss_appendStage(sstr, STAGE_NAMES[4], 9, MODE_NAME_NA, 1);
-        }
-        sstr << "]}";
-    }
     sstr << "]}";
+    //<-- set array, beatmap container
     sstr.flush();
 
     return sstr.str();

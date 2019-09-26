@@ -166,7 +166,7 @@ void CBeatTranslator::translate()
     infostr.emplace_back(
         seq.createMapInfo(
             cont.Media,
-            cont.Setting,
+            //cont.Setting,
             CBsSequencer::BsStageFlagsT{
                 mAvailableStages[0], mAvailableStages[1], mAvailableStages[2], mAvailableStages[3], mAvailableStages[4]
             }

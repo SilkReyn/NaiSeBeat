@@ -28,9 +28,9 @@ public:
         bool Easy, Normal, Hard, Expert, ExpertPlus;
     };
 
-    void transformBeatset(NaiSe::BeatSetT& rInOut) const final override;
+    void transformBeatset(NaiSe::BeatSetT& rInOut) final override;
     std::vector<std::string> serializeBeatset(const NaiSe::BeatSetT& rIn) const final override;
-    std::string createMapInfo(const NaiSe::MediaInfoT& rInMeta, const NaiSe::SettingT& rInConf, BsStageFlagsT stages) const;
+    std::string createMapInfo(const NaiSe::MediaInfoT& rInMeta, BsStageFlagsT stages) const;
     
     const char* getVersion() const final override { return "2.0.0"; }
 };
