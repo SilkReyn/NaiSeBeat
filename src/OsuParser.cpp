@@ -65,7 +65,7 @@ enum class HitIndex : uint8_t
     timestamp,
     typeId,
     soundId,
-    extra
+    attrib
 };
 
 // Using regex to trim whitespace
@@ -307,7 +307,7 @@ bool assignFromSequence(const StringSequenceT& rInSeq, vector<EntityT>& rOut)
         if (xstring::trySplit(*it, args, ','))
         {
             if (any_of(args.cbegin(), args.cend() - 1,
-                [](string sx) { return xstring::contains(sx, "-"); }))  // no negative values, excludig extra part
+                [](string sx) { return xstring::contains(sx, "-"); }))  // no negative values, excludig attributes part
             {
                 continue;
             }
@@ -326,7 +326,7 @@ bool assignFromSequence(const StringSequenceT& rInSeq, vector<EntityT>& rOut)
                 {
                     try
                     {
-                        obj.Value = stof(args.front());
+                        obj.Value = stof(args.front());  // end of hold timestamp
                     } catch (exception ex) {
                         obj.Type.OsuType.IsContinous = false;
                         obj.Value = 0.f;
@@ -334,10 +334,35 @@ bool assignFromSequence(const StringSequenceT& rInSeq, vector<EntityT>& rOut)
                 } else {
                     obj.Type.OsuType.IsContinous = false;
                 }
-            } else {  // TODO store slider or spinner attributes
+            } else if (obj.Type.OsuType.IsSlider) {
+                if (args.size() > 7)
+                {
+                    try
+                    {
+                        // slider size in pixel: repetitions * lenght
+                        obj.Value = stof(args[enum_cast(HitIndex::attrib) + 1]) * stof(args[enum_cast(HitIndex::attrib) + 2]);
+                    }
+                    catch (exception e) {
+                        obj.Type.OsuType.IsSlider = false;
+                        obj.Value = 0;
+                    }
+                }else {
+                    continue;
+                }
+            }else if (obj.Type.OsuType.IsSpin) {
                 try
                 {
-                    obj.Value = stof(args[HitIndex::soundId]);
+                    obj.Value = stof(args[HitIndex::attrib]);  // end of spin timestamp
+                }
+                catch (exception e) {
+                    obj.Type.OsuType.IsSpin = false;
+                    obj.Value = 0;
+                }
+            } else {
+                try
+                {
+                    assert(UINT8_MAX >= stoi(args[HitIndex::soundId]));  // within expected range
+                    obj.Value = (float)(0xFF & stoi(args[HitIndex::soundId]));  // hit sound id
                 } catch (exception e) { obj.Value = 0; }
             }
 

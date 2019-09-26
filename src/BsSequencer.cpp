@@ -5,30 +5,32 @@
 #include <forward_list>
 #include <iterator> // distance
 #include <sstream>
-//#include <fstream>
 
 #include "common.hpp"
+
 
 using namespace std;
 using namespace NaiSe;
 
 
-enum class Direction_t : uint8_t { midUp=0, midDown, lCenter, rCenter, lUp, rUp, lDown, rDown, midCenter, direction_size };
-enum class Cube_t : uint8_t { left=0, right, reserved, bomb };
-enum class Speed_t : uint8_t { reset=0, slo1, slo2, med1, med2, med3, fst1, fst2 };
-enum class Switch_t : uint8_t
-{
-    s_Off=0,
-    s1_on, s1_fl_on, s1_fl_off,
-    reserved=4,
-    s2_on, s2_fl_on, s2_fl_off
-};
+namespace NaiSe {
+    enum class Direction_t : uint8_t { midUp = 0, midDown, lCenter, rCenter, lUp, rUp, lDown, rDown, midCenter, direction_size };
+    enum class Cube_t : uint8_t { left = 0, right, reserved, bomb };
+    enum class Speed_t : uint8_t { reset = 0, slo1, slo2, med1, med2, med3, fst1, fst2 };
+    enum class Switch_t : uint8_t
+    {
+        s_Off = 0,
+        s1_on, s1_fl_on, s1_fl_off,
+        reserved = 4,
+        s2_on, s2_fl_on, s2_fl_off
+    };
 
 
-const char* const STAGE_NAMES[] = {"Easy", "Normal", "Hard", "Expert", "ExpertPlus"};
-const char* const MODE_NAME_NA = "NoArrows";
-const uint16_t LEAD_IN_TIME_MS = 4000;
+    const char* const STAGE_NAMES[] = { "Easy", "Normal", "Hard", "Expert", "ExpertPlus" };
+    const char* const MODE_NAME_NA = "NoArrows";
+    const uint16_t LEAD_IN_TIME_MS = 3000;
 
+}// NaiSe ns
 ostream& operator<< (ostream& lhs, const EventType_t& rhs) { return (lhs << enum_cast(rhs)); }
 float& operator<< (float& lhs, const Switch_t& rhs) { return (lhs = static_cast<uint8_t>(rhs)); }
 uint8_t& operator<< (uint8_t& lhs, const Cube_t& rhs) { return (lhs = static_cast<uint8_t>(rhs)); }
@@ -43,7 +45,7 @@ const float BLOCK_PLACEMENT_DOWNTIME_MS = 200.f;
 const float BLOCK_PLACEMENT_DOWNTIME_NEIGHBOUR_MS = 125.f;
 const auto OS_COL_SZ = (float)Os_Map_Width / 4;  
 const auto OS_ROW_SZ = (float)Os_Map_Height / 3;
-
+const uint16_t BS_MAX_BPM = 300u;
 
 float quantizeTimestamp(float ts, double period, const uint8_t MAX_DENUM=8)
 {
@@ -146,16 +148,21 @@ vector<EntityT>::const_iterator isSweepPattern(vector<EntityT>::const_iterator i
 void processEvents(
     const vector<EventT>&  rInEvents,
     forward_list<EventT>&  rOutEvents,
-    float                  tLeadIn_ms,
-    float                  tStart_ms,
+    uint16_t               tLeadIn_ms,
+    uint16_t               tStart_ms,
     function<float(float)> fSetSample)
 {
     //using BsSw_t = CBsSequencer::Switch_t;
+
+    assert(fSetSample);
+    if (tStart_ms < tLeadIn_ms)
+        swap(tStart_ms, tLeadIn_ms);
 
     EventT evn;
     float tVal{};
 
     // Switch off all lights at start
+    // Turn-on events must follow at non-zero timestamps
     const EventType_t lights[] = {
         EventType_t::sw_lightBg,
         EventType_t::sw_lightSd,
@@ -178,12 +185,12 @@ void processEvents(
 
     // Turn on background light after lead-in time
     evn.EventType = lights[0];
-    evn.Timestamp = fSetSample(tLeadIn_ms);  //max(4.f, quantizeTimestamp(rInOut.Setting.LeadIn_ms, baseTime_ms, rInOut.Setting.SubgridSize));
+    evn.Timestamp = fSetSample(max<uint16_t>(tLeadIn_ms, 1));  //max(4.f, quantizeTimestamp(rInOut.Setting.LeadIn_ms, baseTime_ms, rInOut.Setting.SubgridSize));
     evn.Value << Switch_t::s1_on;
     rOutEvents.push_front(evn);
 
     // Turn on environment light at start time
-    evn.Timestamp = fSetSample(tStart_ms);  //quantizeTimestamp(src->SpawnTime, baseTime_ms, rInOut.Setting.SubgridSize);
+    evn.Timestamp = fSetSample(max<uint16_t>(tStart_ms, 1));  //quantizeTimestamp(src->SpawnTime, baseTime_ms, rInOut.Setting.SubgridSize);
     evn.Value << Switch_t::s1_on;
     evn.EventType = lights[1];
     rOutEvents.push_front(evn);
@@ -258,8 +265,9 @@ void transform_mania(
     const double           baseTime_ms,
     forward_list<EventT>&  evList,
     function<float(float)> ftRelative,
-    ISequencer::modeFlag_t gameMode=0u)
+    ISequencer::modeFlag_t asGameMode=0u)
 {
+    assert(ftRelative);
     //if (GameTypes_t::beatsaber == rInOut.Game)
     //    return;
 
@@ -370,24 +378,24 @@ void transform_mania(
     */
     auto dst = rInOut.Targets.begin();
     auto tarEnd = rInOut.Targets.cend();
-    auto src = find_if(rInOut.Targets.cbegin(), tarEnd, [tOffs = rInOut.Setting.LeadIn_ms](EntityT en) {
-            return en.SpawnTime >= tOffs;
+    auto src = find_if(rInOut.Targets.cbegin(), tarEnd, [ ](EntityT en) {
+            return en.SpawnTime > LEAD_IN_TIME_MS;
         });
 
     // Transform targets in-place
     // DO NOT ADD MORE TARGETS THAN CONTAINER SIZE
     EntityT obj;
     EntityT obs;
-    bool isLeft{};
+    bool isLeft = true;
     //bool fixedRow = GameMode_t::os_mania == rInOut.Setting.Mode;
-    float timeSlots[4][3];  // 4:x, 3:y
+    float timeSlots[4][3] = {};  // 4:x, 3:y
     float lastSample{};
     //size_t equalCnt{};
 
-    for (auto&& rows : timeSlots)
-    {// Init each slot to 2sec.
-        fill(rows, &rows[3], 2000.f);
-    }
+    //for (auto&& rows : timeSlots)
+    //{// Init each slot to 2sec.
+    //    fill(rows, &rows[3], 2000.f);
+    //}
 
     rInOut.Objects.clear();
     float tSample{};
@@ -396,19 +404,19 @@ void transform_mania(
         obj.Location.first = (uint16_t)(src->Location.first / OS_COL_SZ);
         obj.Location.second = 0;
         obj.Value = enum_cast(Direction_t::midCenter);  // TODO give some direction logic
-        obj.SpawnTime = ftRelative(src->SpawnTime); //quantizeTimestamp(, baseTime_ms, rInOut.Setting.SubgridSize);
+        obj.SpawnTime = ftRelative(src->SpawnTime); //quantizeTimestamp(src->SpawnTime, baseTime_ms, rInOut.Setting.SubgridSize);
         //obj.Type.RawType == 0
         assert(obj.Location.first < Bs_Map_Width);
         assert(obj.Location.second < Bs_Map_Height);
 
         if (src->Type.OsuType.IsComboStart)
-        {// lights stay turned off till this type appears fist (might never be)
-            /*evn.Timestamp = obj.SpawnTime;
-            evn.EventType = EventType_t::sw_lightSd;
-            evn.Value = (float)(isLeft ? Switch_t::s2_on : Switch_t::s1_on);  // toggle color
-            isLeft = !isLeft;
-            evList.push_front(evn);*/
-            evList.emplace_front(EventT{EventType_t::sw_lightSd, obj.SpawnTime, (float)enum_cast(isLeft ? Switch_t::s2_on : Switch_t::s1_on)});
+        {
+            evList.emplace_front(
+                EventT{
+                    EventType_t::sw_lightSd,
+                    obj.SpawnTime,
+                    (float)enum_cast(isLeft ? Switch_t::s2_on : Switch_t::s1_on)
+                });
             isLeft = !isLeft; // toggle color
         }
 
@@ -605,78 +613,173 @@ void transform_taiko(
     forward_list<EventT>&  rOutEvents,
     vector<EntityT>&       rOutObj,
     function<float(float)> ftRelative,
-    ISequencer::modeFlag_t gameMode=0u)
+    ISequencer::modeFlag_t asGameMode=0u)
 {
     using HitArea_t = HitTypeT::area_t;
-    //if (fstIdx >= rInOutTar.size())
-    //    return;
+    assert(ftRelative);
+    if (rInOutTar.empty())
+        return;
+    
     // TODO validate game mode when implemented
 
-    //EntityT obj;
-    //EntityT obs;
-    
-
-    //auto src = rInOutTar.cbegin() + fstIdx;
-    //auto tarEnd = rInOutTar.cend();
-    //auto dst = rInOutTar.begin();
-
+    bool isBlue = true;
     bool isLeft{};
-    float timeSlots[4][3];  // 4:x, 3:y
-    for (auto&& rows : timeSlots)
-    {// Init each slot to 2sec.
-        fill(rows, &rows[3], 2000.f);
-    }
+    float timeSlots[2] = {};
+    float nextTs{};
+    const auto tarSz = rInOutTar.size();
 
     vector<EntityT> tars;
+    EntityT out;
     HitTypeT ht;
-    float lastTs{};
-    for (auto srcIt=rInOutTar.cbegin() + min(fstIdx,rInOutTar.size()); srcIt!=rInOutTar.cend(); ++srcIt)
+
+    out.Value = enum_cast(Direction_t::midCenter);
+    for (auto i=fstIdx+1; i<=tarSz; ++i)
     {
-        ht.setF(srcIt->Value);
-        if (srcIt->Type.OsuType.IsComboStart)
+        const auto& tar = rInOutTar[i - 1];
+        if (tar.Type.OsuType.IsComboStart)
         {// toggle color
-            rOutEvents.emplace_front(EventT{EventType_t::sw_lightSd, srcIt->SpawnTime, (float)enum_cast(isLeft ? Switch_t::s2_on : Switch_t::s1_on)});
-            isLeft = !isLeft; 
+            rOutEvents.emplace_front(
+                EventT{
+                    EventType_t::sw_lightSd,
+                    ftRelative(tar.SpawnTime),
+                    (float)enum_cast(isBlue ? Switch_t::s2_on : Switch_t::s1_on)
+                });
+            isBlue = !isBlue; 
         }
 
-        // Minimum spacing of neighbour targets
-        if (lastTs != srcIt->SpawnTime)  
-        {// A new timeline
-            if (BLOCK_PLACEMENT_DOWNTIME_NEIGHBOUR_MS > srcIt->SpawnTime - lastTs)
+        //--> Next target (if any)
+        if (i < tarSz)
+            nextTs = rInOutTar[i].SpawnTime;
+        else
+            nextTs += LEAD_IN_TIME_MS;
+        //<--
+
+        if (tar.Type.OsuType.IsCircle)
+        {// Single action
+
+            // Minimum spacing of same hand targets
+            if (BLOCK_PLACEMENT_DOWNTIME_MS > (tar.SpawnTime - timeSlots[isLeft ? 0 : 1]))
                 continue;
-            lastTs = srcIt->SpawnTime;
-        }
 
-        if (srcIt->Type.OsuType.IsCircle)
-        {
+            timeSlots[isLeft ? 0 : 1] = tar.SpawnTime;
+            out.SpawnTime = ftRelative(tar.SpawnTime);
+            bool isFinisher = baseTime_ms < (nextTs - tar.SpawnTime);
+            ht.setF(tar.Value);
             switch (ht.Area)
             {
             case HitArea_t::don:
             case HitArea_t::softCenter:
             default:
-                
+                out.Location.first = isLeft ? 1 : 2;
+                out.Location.second = isFinisher ? 1 : 0;
+                out.Type.RawType << (isLeft ? Cube_t::left : Cube_t::right);
+                tars.emplace_back(out);
+                isLeft = !isLeft;
                 break;
 
             case HitArea_t::katsu:
             case HitArea_t::rim:
+                if (isFinisher)
+                {
+                    out.Location.first = isLeft ? 1 : 2;
+                    out.Location.second = 2;
+                } else {
+                    out.Location.first = isLeft ? 0 : 3;
+                    out.Location.second = 1;
+                }
+                out.Type.RawType << (isLeft ? Cube_t::left : Cube_t::right);
+                tars.emplace_back(out);
+                isLeft = !isLeft;
                 break;
 
             case HitArea_t::dondon:
             case HitArea_t::hardCenter:
+                out.Location.first = 1;
+                out.Location.second = isFinisher ? 1 : 0;
+                out.Type.RawType << Cube_t::left;
+                tars.emplace_back(out);
+                out.Location.first = 2;
+                out.Type.RawType << Cube_t::right;
+                tars.emplace_back(out);
                 break;
 
             case HitArea_t::katatsu:
             case HitArea_t::sides:
+                if (isFinisher)
+                {
+                    out.Location.first = 1;
+                    out.Location.second = 2;
+                }else {
+                    out.Location.first = 0;
+                    out.Location.second = 1;
+                }
+                out.Type.RawType << Cube_t::left;
+                tars.emplace_back(out);
+                out.Location.first = isFinisher ? 2 : 3;
+                out.Type.RawType << Cube_t::right;
+                tars.emplace_back(out);
                 break;
             }
-        } else if(srcIt->Type.OsuType.IsSlider) {
+        } else if(tar.Type.OsuType.IsSlider) {  // duration limited multi action
+            auto tMax = min((float)baseTime_ms / 140.f * tar.Value + tar.SpawnTime, nextTs);
+            out.Location.first = isLeft ? 2 : 0;
+            out.Location.second = 2;
+            out.Type.RawType = WALL_VERTICAL;
+            out.SpawnTime = ftRelative(tar.SpawnTime);
+            out.Value = ftRelative(tMax - tar.SpawnTime);
+            rOutObj.emplace_back(out);
+            out.Location.second = 0;
+            out.Value = enum_cast(Direction_t::midCenter);
+            bool isSideL = isLeft;
+            for (auto ts=tar.SpawnTime; ts<tMax; ts+=BLOCK_PLACEMENT_DOWNTIME_NEIGHBOUR_MS)
+            {
+                if (isSideL)
+                    out.Location.first = isLeft ? 0 : 1;
+                else
+                    out.Location.first = isLeft ? 2 : 3;
+                out.Type.RawType << (isLeft ? Cube_t::left : Cube_t::right);
+                out.SpawnTime = ftRelative(ts);
+                tars.emplace_back(out);
+                isLeft = !isLeft;
+            }
+        }else if(tar.Type.OsuType.IsSpin) {  // end limited multi action
+            for (auto ts = tar.SpawnTime; (ts < tar.Value) && (ts < nextTs); ts += (float)baseTime_ms)
+            {
+                out.SpawnTime = ftRelative(ts);
+                out.Type.RawType << Cube_t::bomb;
+                out.Location.first = 0;
+                out.Location.second = 1;
+                tars.emplace_back(out);
 
-        }else if(srcIt->Type.OsuType.IsSpin) {
+                out.Location.first = 3;
+                tars.emplace_back(out);
 
-        }
-        ftRelative(srcIt->SpawnTime);
-    }
-    
+                out.Location.first = 0;
+                out.Location.second = isLeft ? 0 : 2;
+                tars.emplace_back(out);
+
+                out.Location.first = 3;
+                out.Location.second = isLeft ? 2 : 0;
+                tars.emplace_back(out);
+
+                out.Location.first = 2;
+                //out.Location.second = isLeft ? 2 : 0;
+                out.Type.RawType << Cube_t::right;
+                tars.emplace_back(out);
+
+                out.Location.first = 1;
+                out.Location.second = isLeft ? 0 : 2;
+                out.Type.RawType << Cube_t::left;
+                tars.emplace_back(out);
+
+                isLeft = !isLeft;
+            }
+            timeSlots[0] = timeSlots[1] = tar.Value;
+        }// types of targets
+        
+    }//each target
+
+    rInOutTar = tars;
 }
 
 
@@ -687,10 +790,10 @@ void CBsSequencer::transformBeatset(BeatSetT& rInOut) const
 
     assert(GameTypes_t::osu == rInOut.Game);
 
-    const double baseTime_ms = 60000.f / max(rInOut.Media.AverageRate_bpm, 1.f);
+    const double baseTime_ms = 60000.f / max(1.f, min(rInOut.Media.AverageRate_bpm, (float)BS_MAX_BPM));
 
     size_t i_fst{};
-    float tFirst = rInOut.Setting.LeadIn_ms;
+    float tFirst;// = max<uint16_t>(rInOut.Setting.LeadIn_ms, LEAD_IN_TIME_MS);
     auto tarEnd = rInOut.Targets.cend();
     auto fSample =
         [P=baseTime_ms, S=rInOut.Setting.SubgridSize](float t) {
@@ -698,13 +801,23 @@ void CBsSequencer::transformBeatset(BeatSetT& rInOut) const
     };
     forward_list<EventT> evList;
 
+    // Find index of first target after lead-in and create light events accordingly
     while (i_fst < rInOut.Targets.size())
     {
-        if (rInOut.Targets[i_fst].SpawnTime > tFirst)
+        if (LEAD_IN_TIME_MS < (tFirst = rInOut.Targets[i_fst].SpawnTime))
             break;
         ++i_fst;
     }
-    processEvents(rInOut.Events, evList, max(LEAD_IN_TIME_MS, rInOut.Setting.LeadIn_ms), tFirst, fSample);
+    processEvents(rInOut.Events, evList, rInOut.Setting.LeadIn_ms, (uint16_t)min<float>(tFirst, UINT16_MAX), fSample);
+    if (!rInOut.Targets[i_fst].Type.OsuType.IsComboStart)
+    {
+        evList.emplace_front(
+            EventT{
+                EventType_t::sw_lightSd,
+                quantizeTimestamp(tFirst, baseTime_ms, rInOut.Setting.SubgridSize),
+                (float)enum_cast(Switch_t::s1_on)
+            });
+    }
 
     assert(
         mEnabledMode == BsModeFlagsT::FREESTYLE ||

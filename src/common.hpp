@@ -131,7 +131,7 @@ struct StringSequenceT
 struct SettingT
 {
     std::string  MapName;
-    uint16_t     LeadIn_ms{};
+    uint16_t     LeadIn_ms{};  // unrelated to timestamps
     GameMode_t   Mode{GameMode_t::undefined};
     uint8_t      SubgridSize{8};
 };
