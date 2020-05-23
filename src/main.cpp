@@ -10,7 +10,7 @@ enum class argOpts_t : int
     OPT_UNKNOWN, OPT_NOOPT, OPT_DASH, OPT_LDASH, OPT_DONE
 };
 
-static const char* const USAGE = "[-e|n|h|x|s|r<0-4> path ] [...]";
+static const char* const USAGE = "[-e|n|h|x|s|r<0-4> path ] [...]\nProviding no options will create a loose map";
 static const nih::Parameter<argOpts_t> PARAM_DEF[]
 {
     { argOpts_t::OPT_HELP,    '?', "help",    "", "Show command hints." },
@@ -19,19 +19,17 @@ static const nih::Parameter<argOpts_t> PARAM_DEF[]
     { argOpts_t::OPT_FILE_HD, 'h', "hard",    "path", "Convert single beatmap and store as hard difficulty." },
     { argOpts_t::OPT_FILE_EX, 'x', "extra",   "path", "Convert single beatmap and store as extra hard difficulty." },
     { argOpts_t::OPT_FILE_SP, 's', "special", "path", "Convert single beatmap and store as special difficulty." },
-    { argOpts_t::OPT_FILE_XX, 'r', "rank",    "level,path", "Convert beatmap as part of a beatset and store as rank 'level' difficulty.\nExample: -r1 demoA.osu -r3 demoB.osu" }
+    { argOpts_t::OPT_FILE_XX, 'r', "rank",    "level,path", "Convert beatmap as part of a beatset and store as rank 'level' difficulty.\nNote: Will create a new index file\nExample: -r1 demoA.osu -r3 demoB.osu" }
 };
 
 
 int main(int argc, char** argv)
 {
     int iarg{};
-    //const char* pArgN;
     argOpts_t opt;
     NaiSe::CBeatTranslator bt;
 
     auto fArgs = nih::make_Options(argc, argv, USAGE, PARAM_DEF);
-    //bool inQueue = false;
     do
     {
         switch (opt = fArgs())
@@ -40,45 +38,33 @@ int main(int argc, char** argv)
             std::cout << fArgs.usage();
             break;
 
-        case argOpts_t::OPT_NOOPT:  // defaults to easy
-            if (argc > 1)
-            {
-                bt.convertFile(argv[1]);
-            }
+        //--> without file index
+        case argOpts_t::OPT_NOOPT:
+            bt.convertFile(fArgs[1]);
             break;
 
         case argOpts_t::OPT_FILE_EZ:
-            //bt.appendFile(fArgs[1], NaiSe::Difficulty_t::easy);
-            //bt.translate();
             bt.convertFile(fArgs[1], 1u);
             break;
 
         case argOpts_t::OPT_FILE_NM:
-            //bt.appendFile(fArgs[1], NaiSe::Difficulty_t::normal);
-            //bt.translate();
             bt.convertFile(fArgs[1], 3u);
             break;
 
         case argOpts_t::OPT_FILE_HD:
-            //bt.appendFile(fArgs[1], NaiSe::Difficulty_t::hard);
-            //bt.translate();
             bt.convertFile(fArgs[1], 5u);
             break;
 
         case argOpts_t::OPT_FILE_EX:
-            //bt.appendFile(fArgs[1], NaiSe::Difficulty_t::extra);
-            //bt.translate();
             bt.convertFile(fArgs[1], 7u);
             break;
 
         case argOpts_t::OPT_FILE_SP:
-            //bt.appendFile(fArgs[1], NaiSe::Difficulty_t::special);
-            //bt.translate();
             bt.convertFile(fArgs[1], 9u);
             break;
+        //<-- without file index
 
-        case argOpts_t::OPT_FILE_XX:  // following will generate beatsaber map info
-            //inQueue = true;
+        case argOpts_t::OPT_FILE_XX:
             try
             {
                 iarg = std::stoi(fArgs[1]);

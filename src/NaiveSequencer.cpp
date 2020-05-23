@@ -15,7 +15,11 @@ using namespace std;
 namespace {
 vector<NaiSe::BeatSetT> sMaps{};
 
-bool tryMakeFoldername(const string& artist, const string& title, const string& author, string& rOut)
+bool tryMakeFoldername(
+    const string& artist,
+    const string& title,
+    const string& author,
+    string&       rOut)
 {
     rOut = " -  ()";
     rOut.insert(5, author);
@@ -28,7 +32,7 @@ bool tryMakeFoldername(const string& artist, const string& title, const string& 
     return false;
 }
 
-}
+}// anonymous ns
 
 namespace stdfs = filesystem;
 using namespace NaiSe;
@@ -37,11 +41,10 @@ using namespace NaiSe;
 BeatSetT CBeatTranslator::loadFile(const char* fullpath) const
 {
     CBeatmap file;
-    COsuParser par;
     BeatSetT data;
     if (file.initFromPath(string{fullpath}))
     {
-        if (par.tryParse(file, data))
+        if (COsuParser::tryParse(file, data))
             return data;
     }
     throw runtime_error("NaiveSequencer::loadFile(...) - failed");
@@ -73,7 +76,6 @@ void CBeatTranslator::convertFile(const char* fullpath, uint8_t stage) const
     }
     
     CBeatmap bsFile(seq.serializeBeatset(data), data.Game);
-
     string subdir;
     if (tryMakeFoldername(data.Media.Artist, data.Media.Title, data.Media.Author, subdir))
     {
@@ -167,7 +169,6 @@ void CBeatTranslator::translate()
     infostr.emplace_back(
         seq.createMapInfo(
             cont.Media,
-            cont.Setting,
             CBsSequencer::BsStageFlagsT{
                 mAvailableStages[0], mAvailableStages[1], mAvailableStages[2], mAvailableStages[3], mAvailableStages[4]
             }
@@ -178,12 +179,3 @@ void CBeatTranslator::translate()
     clear();
 }
 
-/*
-bool CBeatTranslator::canTranslate() const
-{
-    return !sMaps.empty() && (mAvailableStages[0] |
-        mAvailableStages[1] |
-        mAvailableStages[2] |
-        mAvailableStages[3] |
-        mAvailableStages[4]);
-}*/

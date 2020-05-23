@@ -1,8 +1,5 @@
 #pragma once
 
-#include <vector>
-//#include <string>
-
 
 namespace NaiSe {
 
@@ -25,7 +22,6 @@ public:
     bool appendFile(const char* fullpath, Difficulty_t stage);
     void translate();
     void clear();
-    //bool canTranslate() const;
-
 };
+
 } // namespace
