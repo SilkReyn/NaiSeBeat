@@ -42,6 +42,7 @@ namespace {
 const uint8_t WALL_VERTICAL = 0u;
 const uint8_t WALL_HORIZONTAL = 1u;
 const float RING_MOV_TOGG_VAL = 0.f;
+const float BLOCK_PLACEMENT_BRAKE_MS = 400.f;
 const float BLOCK_PLACEMENT_DOWNTIME_MS = 200.f;
 const float BLOCK_PLACEMENT_DOWNTIME_NEIGHBOUR_MS = 125.f;
 const auto OS_COL_SZ = (float)Os_Map_Width / 4;  
@@ -91,7 +92,12 @@ void ss_appendObject(stringstream& rOut, const NaiSe::EntityT& obj)
     rOut << "{\"_time\":" << obj.SpawnTime << ",\"_lineIndex\":" << obj.Location.first << ",\"_type\":" << (int)obj.Type.RawType << ",\"_duration\":" << obj.Value << ",\"_width\":" << obj.Location.second << '}';
 }
 
-void ss_appendStage(stringstream& rOut, const char* stageName, int rank,/* const string& filename,*/ const char* modeName, int offset)
+void ss_appendStage(
+    stringstream& rOut,
+    const char*   stageName,
+    int           rank,
+    const char*   modeName,
+    int           offset)
 {
     rOut << R"({"_difficulty":")" << stageName
         << R"(","_difficultyRank":)" << rank
@@ -721,15 +727,28 @@ void transform_taiko(
 
             case HitArea_t::katsu:
             case HitArea_t::rim:
-                if (isFinisher)
+                if (isLeft)
                 {
-                    out.Location.first = isLeft ? 1 : 2;
-                    out.Location.second = 2;
+                    out.Type.RawType << Cube_t::left;
+                    if (isFinisher)
+                    {
+                        out.Location.first = 1;
+                        out.Location.second = 2;
+                    } else {
+                        out.Location.first = 0;
+                        out.Location.second = 0;
+                    }
                 } else {
-                    out.Location.first = isLeft ? 0 : 3;
-                    out.Location.second = 1;
+                    out.Type.RawType << Cube_t::right;
+                    if (isFinisher)
+                    {
+                        out.Location.first = 2;
+                        out.Location.second = 2;
+                    } else {
+                        out.Location.first = 3;
+                        out.Location.second = 0;
+                    }
                 }
-                out.Type.RawType << (isLeft ? Cube_t::left : Cube_t::right);
                 tars.emplace_back(out);
                 isLeft = !isLeft;
                 break;
@@ -763,7 +782,7 @@ void transform_taiko(
                 break;
             }
         } else if(tar.Type.OsuType.IsSlider) {  // duration limited multi action
-            auto tMax = min((float)baseTime_ms / 140.f * tar.Value + tar.SpawnTime, nextTs);
+            auto tMax = min((float)baseTime_ms / 140.f * tar.Value + tar.SpawnTime, nextTs-BLOCK_PLACEMENT_DOWNTIME_MS);
             out.Location.first = isLeft ? 2 : 0;
             out.Location.second = 2;
             out.Type.RawType = WALL_VERTICAL;
@@ -775,11 +794,6 @@ void transform_taiko(
             bool isSideL = isLeft;
             for (auto ts=tar.SpawnTime; ts<tMax; ts+=250.f)
             {
-                /*if (isSideL)
-                    out.Location.first = isLeft ? 0 : 1;
-                else
-                    out.Location.first = isLeft ? 2 : 3;
-                */
                 if (isSideL)
                     out.Location.first = 0;
                 else
@@ -790,9 +804,12 @@ void transform_taiko(
                 isLeft = !isLeft;
             }
         }else if(tar.Type.OsuType.IsSpin) {  // end limited multi action
-            for (auto ts = tar.SpawnTime; (ts < tar.Value) && (ts < nextTs); ts += (float)baseTime_ms)
+            auto tMax = min(tar.Value, nextTs - BLOCK_PLACEMENT_DOWNTIME_MS);
+            for (auto ts = tar.SpawnTime; ts < tMax; ts += (float)baseTime_ms)
             {
                 out.SpawnTime = ftRelative(ts);
+
+                //--> bomb sequence
                 out.Type.RawType << Cube_t::bomb;
                 out.Location.first = 0;
                 out.Location.second = 1;
@@ -802,15 +819,24 @@ void transform_taiko(
                 tars.emplace_back(out);
 
                 out.Location.first = 0;
-                out.Location.second = isLeft ? 0 : 2;
-                tars.emplace_back(out);
+                if (isLeft)
+                {
+                    out.Location.second = 0;
+                    tars.emplace_back(out);
 
-                out.Location.first = 3;
-                out.Location.second = isLeft ? 2 : 0;
+                    out.Location.first = 3;
+                    out.Location.second = 2;
+                } else {
+                    out.Location.second = 2;
+                    tars.emplace_back(out);
+
+                    out.Location.first = 3;
+                    out.Location.second = 0;
+                }
                 tars.emplace_back(out);
+                //<-- bombs
 
                 out.Location.first = 2;
-                //out.Location.second = isLeft ? 2 : 0;
                 out.Type.RawType << Cube_t::right;
                 tars.emplace_back(out);
 
@@ -823,52 +849,75 @@ void transform_taiko(
             }
             timeSlots[0] = timeSlots[1] = tar.Value;
         }// types of targets
-        
     }//each target
 
     if (mode == GameMode_t::bs_2H)
-    {
-        // 2nd pass
+    {// 2nd pass (may contain equal time sequences)
+        // Position based direction assignment
+        timeSlots[0] = timeSlots[1] = 0;  //last down swing time
         for (auto&& tn : tars)
         {
             if (tn.Type.RawType == enum_cast(Cube_t::bomb))
                 continue;
-
+            isLeft = tn.Type.RawType == enum_cast(Cube_t::left);
             switch (tn.Location.second)
             {
             case 0:
                 switch (tn.Location.first)
                 {
                 case 0:
-                case 3:
-                    tn.Value = (float)enum_cast((tn.Type.RawType == enum_cast(Cube_t::left)) ? Direction_t::rDown : Direction_t::lDown);
-                    
+                case 3:  // these slots can have opposite side hand
+                    if (isLeft)
+                    {
+                        tn.Value = (float)enum_cast(Direction_t::rDown);
+                        timeSlots[0] = tn.SpawnTime;
+                    } else {
+                        tn.Value = (float)enum_cast(Direction_t::lDown);
+                        timeSlots[1] = tn.SpawnTime;
+                    }
                     break;
+
                 case 1:
                 case 2:
-                    tn.Value = (float)enum_cast(Direction_t::down);
+                    if (.75f < (tn.SpawnTime - timeSlots[isLeft ? 0 : 1]))
+                    {
+                        tn.Value = (float)enum_cast(Direction_t::down);
+                        timeSlots[isLeft ? 0 : 1] = tn.SpawnTime;
+                    } else {
+                        tn.Value = (float)enum_cast(Direction_t::up);
+                    }
                     break;
                 }
                 break;
+
             case 1:
                 switch (tn.Location.first)
                 {
                 case 0:
-                    tn.Value = (float)enum_cast(Direction_t::left);
+                    tn.Value = (float)enum_cast(Direction_t::lUp);
+                    timeSlots[0] = tn.SpawnTime;
                     break;
+
                 case 1:
+                    timeSlots[0] = tn.SpawnTime;
                 case 2:
+                    timeSlots[1] = tn.SpawnTime;
                     tn.Value = (float)enum_cast(Direction_t::fwd);
                     break;
+
                 case 3:
-                    tn.Value = (float)enum_cast(Direction_t::right);
+                    tn.Value = (float)enum_cast(Direction_t::rUp);
+                    timeSlots[1] = tn.SpawnTime;
                     break;
                 }
                 break;
+
             case 2:
+                timeSlots[isLeft ? 0 : 1] = tn.SpawnTime;
                 tn.Value = (float)enum_cast(Direction_t::up);
                 break;
             }
+            
         }
     }
     rInOutTar = tars;
@@ -961,7 +1010,7 @@ void CBsSequencer::transformBeatset(BeatSetT& rInOut)
 
     // Set Bs specific meta
     rInOut.Game = NaiSe::GameTypes_t::beatsaber;
-    rInOut.Setting.MapName.append(STAGE_NAMES[rInOut.StageLevel>>1]);
+    rInOut.Setting.MapName.append(rInOut.StageLevel ? STAGE_NAMES[rInOut.StageLevel >> 1] : "_Map");
 }
 
 
